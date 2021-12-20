@@ -68,6 +68,50 @@ hash_array!(
     20 21 22 23 24 25 26 27 28 29
     30 31 32);
 
+macro_rules! hash_tuple {
+    ($($len:expr => ($($n:tt $name:ident)+))+) => {
+        $(
+            #[async_trait]
+            impl<E, $($name),+> Hash for ($($name,)+)
+            where
+                E: std::error::Error + Send + Sync,
+                $($name: Hash<Context = (), Error = E>,)+
+            {
+                type Context = ();
+                type Error = E;
+
+                async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, E> {
+                    let mut hasher = Sha256::default();
+                    $(
+                        let hash = &self.$n.hash(cxt).await?;
+                        hasher.update(hash);
+                    )+
+                    Ok(hasher.finalize().to_vec().into())
+                }
+            }
+        )+
+    }
+}
+
+hash_tuple! {
+    1 => (0 T0)
+    2 => (0 T0 1 T1)
+    3 => (0 T0 1 T1 2 T2)
+    4 => (0 T0 1 T1 2 T2 3 T3)
+    5 => (0 T0 1 T1 2 T2 3 T3 4 T4)
+    6 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5)
+    7 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6)
+    8 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7)
+    9 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8)
+    10 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9)
+    11 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10)
+    12 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11)
+    13 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12)
+    14 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13)
+    15 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13 14 T14)
+    16 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13 14 T14 15 T15)
+}
+
 /// Defines a standard hash for a mutable collection.
 #[async_trait]
 pub trait HashCollection: Send + Sync {
