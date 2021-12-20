@@ -1,5 +1,34 @@
-use std::collections::BTreeMap;
+//! Provides traits [`Hash`] and [`HashCollection`] for SHA256 hashing of data that must be
+//! accessed asynchronously, e.g. a [`Stream`] or database table.
+//!
+//! [`Hash`] is implemented for standard Rust types:
+//!
+//!  - **Primitive types**:
+//!    - bool
+//!    - i8, i16, i32, i64, i128, isize
+//!    - u8, u16, u32, u64, u128, usize
+//!    - f32, f64
+//!    - str
+//!  - **Compound types**:
+//!    - \[T; 0\] through \[T; 32\]
+//!    - tuples up to size 16
+//!  - **Common standard library types**:
+//!    - Option\<T\>
+//!    - Result\<T, E\>
+//!    - PhantomData\<T\>
+//!  - **Other common types**:
+//!    - Bytes
+//!  - **Collection types**:
+//!    - BTreeMap\<K, V\>
+//!    - BTreeSet\<T\>
+//!    - BinaryHeap\<T\>
+//!    - LinkedList\<T\>
+//!    - VecDeque\<T\>
+//!    - Vec\<T\>
+
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
 use std::convert::Infallible;
+use std::marker::PhantomData;
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -9,14 +38,23 @@ use futures::stream::{FuturesOrdered, Stream, TryStreamExt};
 use futures::try_join;
 use sha2::{Digest, Sha256};
 
+/// The hash of an empty value such as `()` or `Option::None`.
 pub const NULL_HASH: [u8; 0] = [];
 
+/// A ordered [`Stream`] of the contents of a [`HashCollection`].
 pub type Contents<'a, T, E> = Pin<Box<dyn Stream<Item = Result<T, E>> + Send + Unpin + 'a>>;
 
 /// Defines a standard hash for a scalar value.
 #[async_trait]
 pub trait Hash: Send + Sync + Sized {
+    /// Contextual information needed to access the data which this state contains.
+    ///
+    /// Use `()` if there is no contextual data needed.
     type Context: Send + Sync;
+
+    /// The type of error which may be returned when accessing this state's data.
+    ///
+    /// Use `Infallible` if there is no error to return.
     type Error: std::error::Error + Send + Sync;
 
     /// Compute the SHA256 hash of this state.
@@ -38,8 +76,62 @@ impl Hash for () {
     type Context = ();
     type Error = Infallible;
 
-    async fn hash(&self, _: &Self::Context) -> Result<Bytes, Self::Error> {
+    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
         Ok(Bytes::copy_from_slice(&NULL_HASH))
+    }
+}
+
+#[async_trait]
+impl<T: Hash> Hash for Option<T> {
+    type Context = T::Context;
+    type Error = T::Error;
+
+    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+        if let Some(value) = self {
+            value.hash(cxt).await
+        } else {
+            Ok(Bytes::copy_from_slice(&NULL_HASH))
+        }
+    }
+}
+
+#[async_trait]
+impl<C, T, E> Hash for Result<T, E>
+where
+    C: Send + Sync,
+    T: Hash<Context = C, Error = Infallible>,
+    E: Hash<Context = C, Error = Infallible>,
+{
+    type Context = C;
+    type Error = Infallible;
+
+    async fn hash(&self, cxt: &C) -> Result<Bytes, Self::Error> {
+        match self {
+            Ok(value) => value.hash(cxt).await,
+            Err(cause) => cause.hash(cxt).await,
+        }
+    }
+}
+
+#[async_trait]
+impl<T: Hash> Hash for PhantomData<T> {
+    type Context = ();
+    type Error = Infallible;
+
+    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
+        Ok(Bytes::copy_from_slice(&NULL_HASH))
+    }
+}
+
+#[async_trait]
+impl Hash for Bytes {
+    type Context = ();
+    type Error = Infallible;
+
+    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
+        let mut hasher = Sha256::default();
+        hasher.update(self);
+        Ok(hasher.finalize().to_vec().into())
     }
 }
 
@@ -67,21 +159,6 @@ where
 }
 
 #[async_trait]
-impl<T: Hash<Context = ()>> Hash for Vec<T> {
-    type Context = T::Context;
-    type Error = T::Error;
-
-    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-        let mut hashes: FuturesOrdered<_> = self.iter().map(|item| item.hash(cxt)).collect();
-        let mut hasher = Sha256::default();
-        while let Some(hash) = hashes.try_next().await? {
-            hasher.update(&hash);
-        }
-        Ok(hasher.finalize().to_vec().into())
-    }
-}
-
-#[async_trait]
 impl<'a> Hash for &'a str {
     type Context = ();
     type Error = Infallible;
@@ -92,6 +169,27 @@ impl<'a> Hash for &'a str {
         Ok(hasher.finalize().to_vec().into())
     }
 }
+
+macro_rules! hash_seq {
+    ($ty:ty) => {
+        #[async_trait]
+        impl<T: Hash<Context = ()>> Hash for $ty {
+            type Context = ();
+            type Error = T::Error;
+
+            async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+                let hashes: FuturesOrdered<_> = self.iter().map(|item| item.hash(cxt)).collect();
+                hash_stream(hashes).await
+            }
+        }
+    };
+}
+
+hash_seq!(BinaryHeap<T>);
+hash_seq!(BTreeSet<T>);
+hash_seq!(LinkedList<T>);
+hash_seq!(Vec<T>);
+hash_seq!(VecDeque<T>);
 
 #[async_trait]
 impl Hash for bool {
@@ -131,9 +229,14 @@ hash_number!(u8);
 hash_number!(u16);
 hash_number!(u32);
 hash_number!(u64);
+hash_number!(u128);
+hash_number!(usize);
+hash_number!(i8);
 hash_number!(i16);
 hash_number!(i32);
 hash_number!(i64);
+hash_number!(i128);
+hash_number!(isize);
 
 #[async_trait]
 impl<T: Send + Sync> Hash for [T; 0] {
@@ -154,12 +257,8 @@ macro_rules! hash_array {
                 type Error = T::Error;
 
                 async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-                    let mut hashes: FuturesOrdered<_> = self.iter().map(|e| e.hash(cxt)).collect();
-                    let mut hasher = Sha256::default();
-                    while let Some(hash) = hashes.try_next().await? {
-                        hasher.update(hash);
-                    }
-                    Ok(hasher.finalize().to_vec().into())
+                    let hashes: FuturesOrdered<_> = self.iter().map(|e| e.hash(cxt)).collect();
+                    hash_stream(hashes).await
                 }
             }
         )+
@@ -222,7 +321,7 @@ pub trait HashCollection: Send + Sync {
     type Item: Hash<Context = ()>;
     type Context: Send + Sync;
 
-    /// Return a stream of hashable items which this state comprises, in a consistent order.
+    /// Return a stream of hashable items which comprise this collection, in a consistent order.
     async fn hashable<'a>(
         &'a self,
         txn: &'a Self::Context,
