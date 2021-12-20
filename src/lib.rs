@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::TryFutureExt;
-use futures::stream::{Stream, TryStreamExt};
+use futures::stream::{FuturesOrdered, Stream, TryStreamExt};
+use futures::try_join;
 use sha2::{Digest, Sha256};
 
 pub const NULL_HASH: [u8; 0] = [];
@@ -38,6 +40,44 @@ impl Hash for () {
 
     async fn hash(&self, _: &Self::Context) -> Result<Bytes, Self::Error> {
         Ok(Bytes::copy_from_slice(&NULL_HASH))
+    }
+}
+
+#[async_trait]
+impl<E, K: Hash<Context = (), Error = E>, V: Hash<Context = (), Error = E>> Hash for BTreeMap<K, V>
+where
+    E: std::error::Error + Send + Sync,
+{
+    type Context = ();
+    type Error = E;
+
+    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+        let mut hashes: FuturesOrdered<_> = self
+            .iter()
+            .map(|(k, v)| async move { try_join!(k.hash(cxt), v.hash(cxt)) })
+            .collect();
+
+        let mut hasher = Sha256::default();
+        while let Some((k_hash, v_hash)) = hashes.try_next().await? {
+            hasher.update(&k_hash);
+            hasher.update(&v_hash);
+        }
+        Ok(hasher.finalize().to_vec().into())
+    }
+}
+
+#[async_trait]
+impl<T: Hash<Context = ()>> Hash for Vec<T> {
+    type Context = T::Context;
+    type Error = T::Error;
+
+    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+        let mut hashes: FuturesOrdered<_> = self.iter().map(|item| item.hash(cxt)).collect();
+        let mut hasher = Sha256::default();
+        while let Some(hash) = hashes.try_next().await? {
+            hasher.update(&hash);
+        }
+        Ok(hasher.finalize().to_vec().into())
     }
 }
 
