@@ -41,6 +41,33 @@ impl Hash for () {
     }
 }
 
+macro_rules! hash_array {
+    ($($len:tt)+) => {
+        $(
+            #[async_trait]
+            impl<T: Hash> Hash for [T; $len] {
+                type Context = T::Context;
+                type Error = T::Error;
+
+                async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+                    let mut hasher = Sha256::default();
+                    for e in self {
+                        let hash = e.hash(cxt).await?;
+                        hasher.update(hash);
+                    }
+                    Ok(hasher.finalize().to_vec().into())
+                }
+            }
+        )+
+    }
+}
+
+hash_array!(
+    00 01 02 03 04 05 06 07 08 09
+    10 11 12 13 14 15 16 17 18 19
+    20 21 22 23 24 25 26 27 28 29
+    30 31 32);
+
 /// Defines a standard hash for a mutable collection.
 #[async_trait]
 pub trait HashCollection: Send + Sync {
@@ -80,5 +107,5 @@ async fn hash_stream<Err, S: Stream<Item = Result<Bytes, Err>> + Unpin>(
         hasher.update(&hash);
     }
 
-    Ok(Bytes::from(hasher.finalize().to_vec()))
+    Ok(hasher.finalize().to_vec().into())
 }
