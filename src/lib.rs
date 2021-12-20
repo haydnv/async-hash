@@ -81,6 +81,60 @@ impl<T: Hash<Context = ()>> Hash for Vec<T> {
     }
 }
 
+#[async_trait]
+impl<'a> Hash for &'a str {
+    type Context = ();
+    type Error = Infallible;
+
+    async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
+        let mut hasher = Sha256::default();
+        hasher.update(self.as_bytes());
+        Ok(hasher.finalize().to_vec().into())
+    }
+}
+
+#[async_trait]
+impl Hash for bool {
+    type Context = ();
+    type Error = Infallible;
+
+    async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
+        let mut hasher = Sha256::default();
+        if *self {
+            hasher.update(&[1]);
+        } else {
+            hasher.update(&[0]);
+        }
+        Ok(hasher.finalize().to_vec().into())
+    }
+}
+
+macro_rules! hash_number {
+    ($ty:ty) => {
+        #[async_trait]
+        impl Hash for $ty {
+            type Context = ();
+            type Error = Infallible;
+
+            async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
+                let mut hasher = Sha256::default();
+                hasher.update(self.to_be_bytes());
+                Ok(hasher.finalize().to_vec().into())
+            }
+        }
+    };
+}
+
+hash_number!(f32);
+hash_number!(f64);
+hash_number!(u8);
+hash_number!(u16);
+hash_number!(u32);
+hash_number!(u64);
+hash_number!(i16);
+hash_number!(i32);
+hash_number!(i64);
+
 macro_rules! hash_array {
     ($($len:tt)+) => {
         $(
