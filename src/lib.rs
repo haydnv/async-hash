@@ -154,9 +154,9 @@ macro_rules! hash_array {
                 type Error = T::Error;
 
                 async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
+                    let mut hashes: FuturesOrdered<_> = self.iter().map(|e| e.hash(cxt)).collect();
                     let mut hasher = Sha256::default();
-                    for e in self {
-                        let hash = e.hash(cxt).await?;
+                    while let Some(hash) = hashes.try_next().await? {
                         hasher.update(hash);
                     }
                     Ok(hasher.finalize().to_vec().into())
