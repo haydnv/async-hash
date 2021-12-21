@@ -1,5 +1,5 @@
-//! Provides traits [`Hash`] and [`HashCollection`] for SHA256 hashing of data that must be
-//! accessed asynchronously, e.g. a [`Stream`] or database table.
+//! Provides traits [`Hash`], [`HashStream`], and [`HashTryStream`] for SHA-2 hashing
+//! of data that must be accessed asynchronously, e.g. a [`Stream`] or database table.
 //!
 //! [`Hash`] is implemented for standard Rust types:
 //!
@@ -8,16 +8,13 @@
 //!    - i8, i16, i32, i64, i128, isize
 //!    - u8, u16, u32, u64, u128, usize
 //!    - f32, f64
-//!    - str
+//!    - &str
+//!  - **Common standard library types**:
+//!    - Option\<T\>
+//!    - PhantomData\<T\>
 //!  - **Compound types**:
 //!    - \[T; 0\] through \[T; 32\]
 //!    - tuples up to size 16
-//!  - **Common standard library types**:
-//!    - Option\<T\>
-//!    - Result\<T, E\>
-//!    - PhantomData\<T\>
-//!  - **Other common types**:
-//!    - Bytes
 //!  - **Collection types**:
 //!    - BTreeMap\<K, V\>
 //!    - BTreeSet\<T\>
@@ -25,278 +22,112 @@
 //!    - LinkedList\<T\>
 //!    - VecDeque\<T\>
 //!    - Vec\<T\>
+//!
+//! [`HashStream`] is implemented for any [`Stream`] whose `Item` implements [`Hash`].
+//! [`HashTryStream`] is implemented for any [`TryStream`] whose `Ok` type implements [`Hash`].
+//!
+//! **IMPORTANT**: hashing is order-dependent. Do not implement the traits in this crate for
+//! any data structure which does not have a consistent order. Consider using the [`collate`] crate
+//! if you need to use a type which does not implement [`Ord`].
 
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
-use std::convert::Infallible;
-use std::marker::PhantomData;
-use std::pin::Pin;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::future::TryFutureExt;
-use futures::stream::{FuturesOrdered, Stream, TryStreamExt};
-use futures::try_join;
-use sha2::{Digest, Sha256};
+use futures::future::{FutureExt, TryFutureExt};
+use futures::stream::{Stream, StreamExt, TryStream, TryStreamExt};
+use sha2::digest::generic_array::GenericArray;
+use sha2::digest::{Digest, Output};
 
-/// The hash of an empty value such as `()` or `Option::None`.
-pub const NULL_HASH: [u8; 0] = [];
+/// Trait to compute a SHA-2 hash using the digest type `D`
+pub trait Hash<D: Digest>: Sized {
+    /// Compute the SHA-2 hash of this value
+    fn hash(self) -> Output<D>;
+}
 
-/// A ordered [`Stream`] of the contents of a [`HashCollection`].
-pub type Contents<'a, T, E> = Pin<Box<dyn Stream<Item = Result<T, E>> + Send + Unpin + 'a>>;
-
-/// Defines a standard hash for a scalar value.
-#[async_trait]
-pub trait Hash: Send + Sync + Sized {
-    /// Contextual information needed to access the data which this state contains.
-    ///
-    /// Use `()` if there is no contextual data needed.
-    type Context: Send + Sync;
-
-    /// The type of error which may be returned when accessing this state's data.
-    ///
-    /// Use `Infallible` if there is no error to return.
-    type Error: std::error::Error + Send + Sync;
-
-    /// Compute the SHA256 hash of this state.
-    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error>;
-
-    /// Consume this state and compute its SHA256 hash.
-    async fn hash_owned(self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-        self.hash(cxt).await
-    }
-
-    /// Return the SHA256 hash of this state as a hexadecimal string.
-    async fn hash_hex(&self, cxt: &Self::Context) -> Result<String, Self::Error> {
-        self.hash(cxt).map_ok(|hash| hex::encode(hash)).await
+impl<D: Digest> Hash<D> for () {
+    fn hash(self) -> Output<D> {
+        GenericArray::default()
     }
 }
 
-#[async_trait]
-impl Hash for () {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
-        Ok(Bytes::copy_from_slice(&NULL_HASH))
-    }
-}
-
-#[async_trait]
-impl<T: Hash> Hash for Option<T> {
-    type Context = T::Context;
-    type Error = T::Error;
-
-    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-        if let Some(value) = self {
-            value.hash(cxt).await
-        } else {
-            Ok(Bytes::copy_from_slice(&NULL_HASH))
-        }
-    }
-}
-
-#[async_trait]
-impl<C, T, E> Hash for Result<T, E>
-where
-    C: Send + Sync,
-    T: Hash<Context = C, Error = Infallible>,
-    E: Hash<Context = C, Error = Infallible>,
-{
-    type Context = C;
-    type Error = Infallible;
-
-    async fn hash(&self, cxt: &C) -> Result<Bytes, Self::Error> {
-        match self {
-            Ok(value) => value.hash(cxt).await,
-            Err(cause) => cause.hash(cxt).await,
-        }
-    }
-}
-
-#[async_trait]
-impl<T: Hash> Hash for PhantomData<T> {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
-        Ok(Bytes::copy_from_slice(&NULL_HASH))
-    }
-}
-
-#[async_trait]
-impl Hash for Bytes {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Self::Error> {
-        let mut hasher = Sha256::default();
-        hasher.update(self);
-        Ok(hasher.finalize().to_vec().into())
-    }
-}
-
-#[async_trait]
-impl<E, K: Hash<Context = (), Error = E>, V: Hash<Context = (), Error = E>> Hash for BTreeMap<K, V>
-where
-    E: std::error::Error + Send + Sync,
-{
-    type Context = ();
-    type Error = E;
-
-    async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-        let mut hashes: FuturesOrdered<_> = self
-            .iter()
-            .map(|(k, v)| async move { try_join!(k.hash(cxt), v.hash(cxt)) })
-            .collect();
-
-        let mut hasher = Sha256::default();
-        while let Some((k_hash, v_hash)) = hashes.try_next().await? {
-            hasher.update(&k_hash);
-            hasher.update(&v_hash);
-        }
-        Ok(hasher.finalize().to_vec().into())
-    }
-}
-
-#[async_trait]
-impl<'a> Hash for &'a str {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
-        let mut hasher = Sha256::default();
-        hasher.update(self.as_bytes());
-        Ok(hasher.finalize().to_vec().into())
-    }
-}
-
-macro_rules! hash_seq {
-    ($ty:ty) => {
-        #[async_trait]
-        impl<T: Hash<Context = ()>> Hash for $ty {
-            type Context = ();
-            type Error = T::Error;
-
-            async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-                let hashes: FuturesOrdered<_> = self.iter().map(|item| item.hash(cxt)).collect();
-                hash_stream(hashes).await
-            }
-        }
-    };
-}
-
-hash_seq!(BinaryHeap<T>);
-hash_seq!(BTreeSet<T>);
-hash_seq!(LinkedList<T>);
-hash_seq!(Vec<T>);
-hash_seq!(VecDeque<T>);
-
-#[async_trait]
-impl Hash for bool {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
-        let mut hasher = Sha256::default();
-        if *self {
-            hasher.update(&[1]);
-        } else {
-            hasher.update(&[0]);
-        }
-        Ok(hasher.finalize().to_vec().into())
+impl<D: Digest> Hash<D> for bool {
+    fn hash(self) -> Output<D> {
+        D::digest([self as u8])
     }
 }
 
 macro_rules! hash_number {
-    ($ty:ty) => {
-        #[async_trait]
-        impl Hash for $ty {
-            type Context = ();
-            type Error = Infallible;
-
-            async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
-                let mut hasher = Sha256::default();
-                hasher.update(self.to_be_bytes());
-                Ok(hasher.finalize().to_vec().into())
+    ($n:literal, $ty:ty) => {
+        impl<D: Digest> Hash<D> for $ty {
+            fn hash(self) -> Output<D> {
+                D::digest(self.to_be_bytes())
             }
         }
     };
 }
 
-hash_number!(f32);
-hash_number!(f64);
-hash_number!(u8);
-hash_number!(u16);
-hash_number!(u32);
-hash_number!(u64);
-hash_number!(u128);
-hash_number!(usize);
-hash_number!(i8);
-hash_number!(i16);
-hash_number!(i32);
-hash_number!(i64);
-hash_number!(i128);
-hash_number!(isize);
+hash_number!(4, f32);
+hash_number!(8, f64);
+hash_number!(1, i8);
+hash_number!(2, i16);
+hash_number!(4, i32);
+hash_number!(8, i64);
+hash_number!(16, i128);
+hash_number!(1, u8);
+hash_number!(2, u16);
+hash_number!(4, u32);
+hash_number!(8, u64);
+hash_number!(16, u128);
 
-#[async_trait]
-impl<T: Send + Sync> Hash for [T; 0] {
-    type Context = ();
-    type Error = Infallible;
-
-    async fn hash(&self, _: &()) -> Result<Bytes, Infallible> {
-        Ok(Bytes::copy_from_slice(&NULL_HASH))
+impl<D: Digest> Hash<D> for isize {
+    fn hash(self) -> Output<D> {
+        Hash::<D>::hash(self as i64)
     }
 }
 
-macro_rules! hash_array {
-    ($($len:tt)+) => {
-        $(
-            #[async_trait]
-            impl<T: Hash> Hash for [T; $len] {
-                type Context = T::Context;
-                type Error = T::Error;
-
-                async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, Self::Error> {
-                    let hashes: FuturesOrdered<_> = self.iter().map(|e| e.hash(cxt)).collect();
-                    hash_stream(hashes).await
-                }
-            }
-        )+
+impl<D: Digest> Hash<D> for usize {
+    fn hash(self) -> Output<D> {
+        Hash::<D>::hash(self as u64)
     }
 }
 
-hash_array!(
-    01 02 03 04 05 06 07 08 09 10
-    11 12 13 14 15 16 17 18 19 20
-    21 22 23 24 25 26 27 28 29 30
-    31 32);
+impl<'a, D: Digest> Hash<D> for &'a str {
+    fn hash(self) -> Output<D> {
+        D::digest(self.as_bytes())
+    }
+}
 
-macro_rules! hash_tuple {
+impl<D: Digest, T: Hash<D>> Hash<D> for Option<T> {
+    fn hash(self) -> Output<D> {
+        if let Some(value) = self {
+            value.hash()
+        } else {
+            GenericArray::default()
+        }
+    }
+}
+
+macro_rules! encode_tuple {
     ($($len:expr => ($($n:tt $name:ident)+))+) => {
         $(
-            #[async_trait]
-            impl<E, $($name),+> Hash for ($($name,)+)
+            impl<D: Digest, $($name),+> Hash<D> for ($($name,)+)
             where
-                E: std::error::Error + Send + Sync,
-                $($name: Hash<Context = (), Error = E>,)+
+                $($name: Hash<D>,)+
             {
-                type Context = ();
-                type Error = E;
-
-                async fn hash(&self, cxt: &Self::Context) -> Result<Bytes, E> {
-                    let mut hasher = Sha256::default();
+                fn hash(self) -> Output<D> {
+                    let mut hasher = D::new();
                     $(
-                        let hash = &self.$n.hash(cxt).await?;
+                        let hash = self.$n.hash();
                         hasher.update(hash);
                     )+
-                    Ok(hasher.finalize().to_vec().into())
+                    hasher.finalize()
                 }
             }
         )+
     }
 }
 
-hash_tuple! {
+encode_tuple! {
     1 => (0 T0)
     2 => (0 T0 1 T1)
     3 => (0 T0 1 T1 2 T2)
@@ -315,44 +146,119 @@ hash_tuple! {
     16 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13 14 T14 15 T15)
 }
 
-/// Defines a standard hash for a mutable collection.
-#[async_trait]
-pub trait HashCollection: Send + Sync {
-    type Item: Hash<Context = ()>;
-    type Context: Send + Sync;
+impl<D: Digest, T: Hash<D>> Hash<D> for [T; 0] {
+    fn hash(self) -> Output<D> {
+        GenericArray::default()
+    }
+}
 
-    /// Return a stream of hashable items which comprise this collection, in a consistent order.
-    async fn hashable<'a>(
-        &'a self,
-        txn: &'a Self::Context,
-    ) -> Result<Contents<'a, Self::Item, <Self::Item as Hash>::Error>, <Self::Item as Hash>::Error>;
+macro_rules! hash_array {
+    ($($len:tt)+) => {
+        $(
+            impl<D: Digest, T: Hash<D>> Hash<D> for [T; $len] {
+                fn hash(self) -> Output<D> {
+                    if self.is_empty() {
+                        return GenericArray::default();
+                    }
+
+                    let mut hasher = D::new();
+                    for item in self {
+                        hasher.update(item.hash());
+                    }
+                    hasher.finalize()
+                }
+            }
+        )+
+    }
+}
+
+hash_array! {
+    01 02 03 04 05 06 07 08 09 10
+    11 12 13 14 15 16 17 18 19 20
+    21 22 23 24 25 26 27 28 29 30
+    31 32
+}
+
+macro_rules! hash_seq {
+    ($ty:ty) => {
+        impl<D: Digest, T: Hash<D>> Hash<D> for $ty {
+            fn hash(self) -> Output<D> {
+                if self.is_empty() {
+                    GenericArray::default()
+                } else {
+                    let mut hasher = D::new();
+                    for item in self.into_iter() {
+                        hasher.update(item.hash());
+                    }
+                    hasher.finalize()
+                }
+            }
+        }
+    };
+}
+
+hash_seq!(BTreeSet<T>);
+hash_seq!(BinaryHeap<T>);
+hash_seq!(LinkedList<T>);
+hash_seq!(Vec<T>);
+hash_seq!(VecDeque<T>);
+
+impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
+    fn hash(self) -> Output<D> {
+        if self.is_empty() {
+            GenericArray::default()
+        } else {
+            let mut hasher = D::new();
+            for item in self {
+                hasher.update(item.hash());
+            }
+            hasher.finalize()
+        }
+    }
 }
 
 #[async_trait]
-impl<T> Hash for T
+pub trait HashStream<D>: Stream + Sized
 where
-    T: HashCollection,
+    D: Digest + Send,
+    Self::Item: Hash<D>,
 {
-    type Context = T::Context;
-    type Error = <T::Item as Hash>::Error;
-
-    async fn hash(&self, txn: &Self::Context) -> Result<Bytes, Self::Error> {
-        let items = self.hashable(txn).await?;
-        let item_hashes = items
-            .map_ok(|item| item.hash_owned(&()))
-            .try_buffered(num_cpus::get());
-
-        hash_stream(item_hashes).await
+    async fn hash(self) -> Output<D> {
+        self.map(|item| item.hash())
+            .fold(D::new(), |mut hasher, hash| {
+                hasher.update(hash);
+                futures::future::ready(hasher)
+            })
+            .map(|hasher| hasher.finalize())
+            .await
     }
 }
 
-async fn hash_stream<Err, S: Stream<Item = Result<Bytes, Err>> + Unpin>(
-    mut items: S,
-) -> Result<Bytes, Err> {
-    let mut hasher = Sha256::default();
-    while let Some(hash) = items.try_next().await? {
-        hasher.update(&hash);
-    }
+impl<D: Digest + Send, T: Hash<D>, S: Stream<Item = T>> HashStream<D> for S {}
 
-    Ok(hasher.finalize().to_vec().into())
+#[async_trait]
+pub trait HashTryStream<D>: TryStream + Sized
+where
+    D: Digest + Send,
+    Self::Ok: Hash<D>,
+    Self::Error: Send,
+{
+    async fn hash(self) -> Result<Output<D>, Self::Error> {
+        self.map_ok(|item| item.hash())
+            .try_fold(D::new(), |mut hasher, hash| {
+                hasher.update(hash);
+                futures::future::ready(Ok(hasher))
+            })
+            .map_ok(|hasher| hasher.finalize())
+            .await
+    }
+}
+
+impl<D, T, S> HashTryStream<D> for S
+where
+    D: Digest + Send,
+    T: Hash<D>,
+    S: TryStream<Ok = T>,
+    S::Error: Send,
+{
 }
