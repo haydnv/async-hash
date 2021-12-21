@@ -9,6 +9,7 @@
 //!    - u8, u16, u32, u64, u128, usize
 //!    - f32, f64
 //!    - &str
+//!    - String
 //!  - **Common standard library types**:
 //!    - Option\<T\>
 //!    - PhantomData\<T\>
@@ -94,6 +95,12 @@ impl<D: Digest> Hash<D> for usize {
 impl<'a, D: Digest> Hash<D> for &'a str {
     fn hash(self) -> Output<D> {
         D::digest(self.as_bytes())
+    }
+}
+
+impl<D: Digest> Hash<D> for String {
+    fn hash(self) -> Output<D> {
+        Hash::<D>::hash(self.as_str())
     }
 }
 
@@ -194,6 +201,24 @@ macro_rules! hash_seq {
                 }
             }
         }
+
+        impl<'a, D, T> Hash<D> for &'a $ty
+        where
+            D: Digest,
+            &'a T: Hash<D>,
+        {
+            fn hash(self) -> Output<D> {
+                if self.is_empty() {
+                    GenericArray::default()
+                } else {
+                    let mut hasher = D::new();
+                    for item in self.into_iter() {
+                        hasher.update(item.hash());
+                    }
+                    hasher.finalize()
+                }
+            }
+        }
     };
 }
 
@@ -204,6 +229,20 @@ hash_seq!(Vec<T>);
 hash_seq!(VecDeque<T>);
 
 impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
+    fn hash(self) -> Output<D> {
+        if self.is_empty() {
+            GenericArray::default()
+        } else {
+            let mut hasher = D::new();
+            for item in self {
+                hasher.update(item.hash());
+            }
+            hasher.finalize()
+        }
+    }
+}
+
+impl<'a, D, K, V> Hash<D> for &'a BTreeMap<K, V> where D: Digest, &'a K: Hash<D>, &'a V: Hash<D> {
     fn hash(self) -> Output<D> {
         if self.is_empty() {
             GenericArray::default()
