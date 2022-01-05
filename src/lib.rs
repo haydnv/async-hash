@@ -126,6 +126,20 @@ macro_rules! encode_tuple {
                     hasher.finalize()
                 }
             }
+
+            impl<'a, D: Digest, $($name),+> Hash<D> for &'a ($($name,)+)
+            where
+                $(&'a $name: Hash<D>,)+
+            {
+                fn hash(self) -> Output<D> {
+                    let mut hasher = D::new();
+                    $(
+                        let hash = self.$n.hash();
+                        hasher.update(hash);
+                    )+
+                    hasher.finalize()
+                }
+            }
         )+
     }
 }
