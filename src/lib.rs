@@ -24,16 +24,12 @@
 //!    - VecDeque\<T\>
 //!    - Vec\<T\>
 //!
-//! [`HashStream`] is implemented for any [`Stream`] whose `Item` implements [`Hash`].
-//! [`HashTryStream`] is implemented for any [`TryStream`] whose `Ok` type implements [`Hash`].
-//!
 //! **IMPORTANT**: hashing is order-dependent. Do not implement the traits in this crate for
 //! any data structure which does not have a consistent order. Consider using the [`collate`] crate
 //! if you need to use a type which does not implement [`Ord`].
 
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
 
-use async_trait::async_trait;
 use futures::future::{FutureExt, TryFutureExt};
 use futures::stream::{Stream, StreamExt, TryStream, TryStreamExt};
 use sha2::digest::generic_array::GenericArray;
@@ -242,7 +238,12 @@ impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
     }
 }
 
-impl<'a, D, K, V> Hash<D> for &'a BTreeMap<K, V> where D: Digest, &'a K: Hash<D>, &'a V: Hash<D> {
+impl<'a, D, K, V> Hash<D> for &'a BTreeMap<K, V>
+where
+    D: Digest,
+    &'a K: Hash<D>,
+    &'a V: Hash<D>,
+{
     fn hash(self) -> Output<D> {
         if self.is_empty() {
             GenericArray::default()
@@ -256,48 +257,35 @@ impl<'a, D, K, V> Hash<D> for &'a BTreeMap<K, V> where D: Digest, &'a K: Hash<D>
     }
 }
 
-#[async_trait]
-pub trait HashStream<D>: Stream + Sized
+pub async fn hash_stream<D, T, S>(stream: S) -> Output<D>
 where
-    D: Digest + Send,
-    Self::Item: Hash<D>,
-{
-    async fn hash(self) -> Output<D> {
-        self.map(|item| item.hash())
-            .fold(D::new(), |mut hasher, hash| {
-                hasher.update(hash);
-                futures::future::ready(hasher)
-            })
-            .map(|hasher| hasher.finalize())
-            .await
-    }
-}
-
-impl<D: Digest + Send, T: Hash<D>, S: Stream<Item = T>> HashStream<D> for S {}
-
-#[async_trait]
-pub trait HashTryStream<D>: TryStream + Sized
-where
-    D: Digest + Send,
-    Self::Ok: Hash<D>,
-    Self::Error: Send,
-{
-    async fn hash(self) -> Result<Output<D>, Self::Error> {
-        self.map_ok(|item| item.hash())
-            .try_fold(D::new(), |mut hasher, hash| {
-                hasher.update(hash);
-                futures::future::ready(Ok(hasher))
-            })
-            .map_ok(|hasher| hasher.finalize())
-            .await
-    }
-}
-
-impl<D, T, S> HashTryStream<D> for S
-where
-    D: Digest + Send,
+    D: Digest,
     T: Hash<D>,
-    S: TryStream<Ok = T>,
-    S::Error: Send,
+    S: Stream<Item = T>,
 {
+    stream
+        .map(|item| Hash::<D>::hash(item))
+        .fold(D::new(), |mut hasher, hash| {
+            hasher.update(hash);
+            futures::future::ready(hasher)
+        })
+        .map(|hasher| hasher.finalize())
+        .await
+}
+
+pub async fn hash_try_stream<D, T, E, S>(stream: S) -> Result<Output<D>, E>
+where
+    D: Digest,
+    T: Hash<D>,
+    E: std::error::Error,
+    S: TryStream<Ok = T, Error = E>,
+{
+    stream
+        .map_ok(|item| Hash::<D>::hash(item))
+        .try_fold(D::new(), |mut hasher, hash| {
+            hasher.update(hash);
+            futures::future::ready(Ok(hasher))
+        })
+        .map_ok(|hasher| hasher.finalize())
+        .await
 }

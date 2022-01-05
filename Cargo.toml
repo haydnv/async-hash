@@ -1,9 +1,9 @@
 [package]
 name = "async-hash"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2018"
 authors = ["haydn@tinychain.net"]
-description = "Traits for SHA256 hashing of async data types"
+description = "Traits and helper functions for SHA256 hashing of async data types"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/haydnv/async-hash.git"
@@ -12,7 +12,6 @@ keywords = ["sha256", "hash", "asynchronous", "stream"]
 categories = ["cryptography"]
 
 [dependencies]
-async-trait = "0.1"
 futures = "0.3"
 hex = "0.4"
 num_cpus = "1.13"
