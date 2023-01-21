@@ -1,7 +1,7 @@
-//! Provides traits [`Hash`], [`HashStream`], and [`HashTryStream`] for SHA-2 hashing
+//! Provides traits `Hash`, `HashStream`, and `HashTryStream` for SHA-2 hashing
 //! of data that must be accessed asynchronously, e.g. a [`Stream`] or database table.
 //!
-//! [`Hash`] is implemented for standard Rust types:
+//! `Hash` is implemented for standard Rust types:
 //!
 //!  - **Primitive types**:
 //!    - bool
@@ -27,13 +27,15 @@
 //! **IMPORTANT**: hashing is order-dependent. Do not implement the traits in this crate for
 //! any data structure which does not have a consistent order. Consider using the [`collate`] crate
 //! if you need to use a type which does not implement [`Ord`].
+//!
+//! [`collate`]: http://docs.rs/collate
 
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
 
 use futures::future::{FutureExt, TryFutureExt};
 use futures::stream::{Stream, StreamExt, TryStream, TryStreamExt};
 
-pub use sha2::digest::generic_array::GenericArray;
+pub use sha2::digest::generic_array;
 pub use sha2::digest::{Digest, Output};
 
 /// Trait to compute a SHA-2 hash using the digest type `D`
@@ -44,7 +46,7 @@ pub trait Hash<D: Digest>: Sized {
 
 impl<D: Digest> Hash<D> for () {
     fn hash(self) -> Output<D> {
-        GenericArray::default()
+        default_hash::<D>()
     }
 }
 
@@ -106,7 +108,7 @@ impl<D: Digest, T: Hash<D>> Hash<D> for Option<T> {
         if let Some(value) = self {
             value.hash()
         } else {
-            GenericArray::default()
+            default_hash::<D>()
         }
     }
 }
@@ -166,7 +168,7 @@ encode_tuple! {
 
 impl<D: Digest, T: Hash<D>> Hash<D> for [T; 0] {
     fn hash(self) -> Output<D> {
-        GenericArray::default()
+        default_hash::<D>()
     }
 }
 
@@ -176,7 +178,7 @@ macro_rules! hash_array {
             impl<D: Digest, T: Hash<D>> Hash<D> for [T; $len] {
                 fn hash(self) -> Output<D> {
                     if self.is_empty() {
-                        return GenericArray::default();
+                        return default_hash::<D>();
                     }
 
                     let mut hasher = D::new();
@@ -202,14 +204,16 @@ macro_rules! hash_seq {
         impl<D: Digest, T: Hash<D>> Hash<D> for $ty {
             fn hash(self) -> Output<D> {
                 if self.is_empty() {
-                    GenericArray::default()
-                } else {
-                    let mut hasher = D::new();
-                    for item in self.into_iter() {
-                        hasher.update(item.hash());
-                    }
-                    hasher.finalize()
+                    return default_hash::<D>();
                 }
+
+                let mut hasher = D::new();
+
+                for item in self.into_iter() {
+                    hasher.update(item.hash());
+                }
+
+                hasher.finalize()
             }
         }
 
@@ -220,14 +224,14 @@ macro_rules! hash_seq {
         {
             fn hash(self) -> Output<D> {
                 if self.is_empty() {
-                    GenericArray::default()
-                } else {
-                    let mut hasher = D::new();
-                    for item in self.into_iter() {
-                        hasher.update(item.hash());
-                    }
-                    hasher.finalize()
+                    return default_hash::<D>();
                 }
+
+                let mut hasher = D::new();
+                for item in self.into_iter() {
+                    hasher.update(item.hash());
+                }
+                hasher.finalize()
             }
         }
     };
@@ -242,14 +246,14 @@ hash_seq!(VecDeque<T>);
 impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
     fn hash(self) -> Output<D> {
         if self.is_empty() {
-            GenericArray::default()
-        } else {
-            let mut hasher = D::new();
-            for item in self {
-                hasher.update(item.hash());
-            }
-            hasher.finalize()
+            return default_hash::<D>();
         }
+
+        let mut hasher = D::new();
+        for item in self {
+            hasher.update(item.hash());
+        }
+        hasher.finalize()
     }
 }
 
@@ -261,17 +265,20 @@ where
 {
     fn hash(self) -> Output<D> {
         if self.is_empty() {
-            GenericArray::default()
-        } else {
-            let mut hasher = D::new();
-            for item in self {
-                hasher.update(item.hash());
-            }
-            hasher.finalize()
+            return default_hash::<D>();
         }
+
+        let mut hasher = D::new();
+
+        for item in self {
+            hasher.update(item.hash());
+        }
+
+        hasher.finalize()
     }
 }
 
+/// Hash a [`Stream`]
 pub async fn hash_stream<D, T, S>(stream: S) -> Output<D>
 where
     D: Digest,
@@ -288,6 +295,7 @@ where
         .await
 }
 
+/// Hash a [`TryStream`]
 pub async fn hash_try_stream<D, T, E, S>(stream: S) -> Result<Output<D>, E>
 where
     D: Digest,
@@ -303,4 +311,9 @@ where
         })
         .map_ok(|hasher| hasher.finalize())
         .await
+}
+
+/// Construct an empty hash
+pub fn default_hash<D: Digest>() -> Output<D> {
+    generic_array::GenericArray::default()
 }
