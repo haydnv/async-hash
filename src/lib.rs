@@ -32,8 +32,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
 
 use futures::future::{FutureExt, TryFutureExt};
 use futures::stream::{Stream, StreamExt, TryStream, TryStreamExt};
-use sha2::digest::generic_array::GenericArray;
-use sha2::digest::{Digest, Output};
+
+pub use sha2::digest::generic_array::GenericArray;
+pub use sha2::digest::{Digest, Output};
 
 /// Trait to compute a SHA-2 hash using the digest type `D`
 pub trait Hash<D: Digest>: Sized {
