@@ -1,6 +1,6 @@
 [package]
 name = "async-hash"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 authors = ["code@tinychain.net"]
 description = "Traits and helper functions for SHA256 hashing of async data types"
@@ -14,5 +14,5 @@ categories = ["cryptography"]
 [dependencies]
 futures = "0.3"
 hex = "0.4"
-num_cpus = "1.13"
+num_cpus = "1.15"
 sha2 = "0.10"

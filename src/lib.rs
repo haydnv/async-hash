@@ -37,6 +37,7 @@ use futures::stream::{Stream, StreamExt, TryStream, TryStreamExt};
 
 pub use sha2::digest::generic_array;
 pub use sha2::digest::{Digest, Output};
+pub use sha2::Sha256;
 
 /// Trait to compute a SHA-2 hash using the digest type `D`
 pub trait Hash<D: Digest>: Sized {
@@ -98,6 +99,12 @@ impl<'a, D: Digest> Hash<D> for &'a str {
 }
 
 impl<D: Digest> Hash<D> for String {
+    fn hash(self) -> Output<D> {
+        Hash::<D>::hash(self.as_str())
+    }
+}
+
+impl<'a, D: Digest> Hash<D> for &'a String {
     fn hash(self) -> Output<D> {
         Hash::<D>::hash(self.as_str())
     }
