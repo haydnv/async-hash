@@ -1,5 +1,5 @@
-//! Provides traits `Hash`, `HashStream`, and `HashTryStream` for SHA-2 hashing
-//! of data that must be accessed asynchronously, e.g. a [`Stream`] or database table.
+//! Provides traits `Hash`, `HashStream`, and `HashTryStream` for SHA-2 hashing data
+//! which must be accessed asynchronously, e.g. a [`Stream`] or database table.
 //!
 //! `Hash` is implemented for standard Rust types:
 //!
@@ -23,6 +23,8 @@
 //!    - LinkedList\<T\>
 //!    - VecDeque\<T\>
 //!    - Vec\<T\>
+//!  - **Other types**:
+//!    - SmallVec\<V\> (requires the `smallvec` feature flag)
 //!
 //! **IMPORTANT**: hashing is order-dependent. Do not implement the traits in this crate for
 //! any data structure which does not have a consistent order. Consider using the [`collate`] crate
@@ -120,7 +122,7 @@ impl<D: Digest, T: Hash<D>> Hash<D> for Option<T> {
     }
 }
 
-macro_rules! encode_tuple {
+macro_rules! hash_tuple {
     ($($len:expr => ($($n:tt $name:ident)+))+) => {
         $(
             impl<D: Digest, $($name),+> Hash<D> for ($($name,)+)
@@ -154,7 +156,7 @@ macro_rules! encode_tuple {
     }
 }
 
-encode_tuple! {
+hash_tuple! {
     1 => (0 T0)
     2 => (0 T0 1 T1)
     3 => (0 T0 1 T1 2 T2)
@@ -189,9 +191,11 @@ macro_rules! hash_array {
                     }
 
                     let mut hasher = D::new();
+
                     for item in self {
                         hasher.update(item.hash());
                     }
+
                     hasher.finalize()
                 }
             }
@@ -250,6 +254,48 @@ hash_seq!(LinkedList<T>);
 hash_seq!(Vec<T>);
 hash_seq!(VecDeque<T>);
 
+#[cfg(feature = "smallvec")]
+impl<const N: usize, D: Digest, T> Hash<D> for smallvec::SmallVec<[T; N]>
+where
+    [T; N]: smallvec::Array,
+    <smallvec::SmallVec<[T; N]> as IntoIterator>::Item: Hash<D>,
+{
+    fn hash(self) -> Output<D> {
+        if self.is_empty() {
+            return default_hash::<D>();
+        }
+
+        let mut hasher = D::new();
+
+        for item in self.into_iter() {
+            hasher.update(item.hash());
+        }
+
+        hasher.finalize()
+    }
+}
+
+#[cfg(feature = "smallvec")]
+impl<'a, const N: usize, D: Digest, T> Hash<D> for &'a smallvec::SmallVec<[T; N]>
+where
+    [T; N]: smallvec::Array,
+    <&'a smallvec::SmallVec<[T; N]> as IntoIterator>::Item: Hash<D>,
+{
+    fn hash(self) -> Output<D> {
+        if self.is_empty() {
+            return default_hash::<D>();
+        }
+
+        let mut hasher = D::new();
+
+        for item in self.into_iter() {
+            hasher.update(item.hash());
+        }
+
+        hasher.finalize()
+    }
+}
+
 impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
     fn hash(self) -> Output<D> {
         if self.is_empty() {
@@ -257,9 +303,11 @@ impl<D: Digest, K: Hash<D>, V: Hash<D>> Hash<D> for BTreeMap<K, V> {
         }
 
         let mut hasher = D::new();
+
         for item in self {
             hasher.update(item.hash());
         }
+
         hasher.finalize()
     }
 }

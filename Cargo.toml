@@ -1,6 +1,6 @@
 [package]
 name = "async-hash"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 authors = ["code@tinychain.net"]
 description = "Traits and helper functions for SHA256 hashing of async data types"
@@ -11,8 +11,12 @@ repository = "https://github.com/haydnv/async-hash.git"
 keywords = ["sha256", "hash", "asynchronous", "stream"]
 categories = ["cryptography"]
 
+[features]
+all = ["smallvec"]
+
 [dependencies]
 futures = "0.3"
 hex = "0.4"
-num_cpus = "1.15"
+num_cpus = "1.16"
 sha2 = "0.10"
+smallvec = { version = "1.11", optional = true }
