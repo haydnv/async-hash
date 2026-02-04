@@ -41,6 +41,42 @@ pub use sha2::digest::generic_array;
 pub use sha2::digest::{Digest, Output};
 pub use sha2::Sha256;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_equivalence_string_and_bytes() {
+        let s = "hello";
+        let from_str = Hash::<Sha256>::hash(s);
+        let from_string = Hash::<Sha256>::hash(s.to_string());
+
+        assert_eq!(from_str, from_string);
+    }
+
+    #[test]
+    fn hash_empty_matches_default() {
+        let empty_vec: Vec<u8> = Vec::new();
+        let empty_str = "";
+        let empty_opt: Option<u8> = None;
+
+        assert_eq!(Hash::<Sha256>::hash(empty_vec), default_hash::<Sha256>());
+        assert_ne!(Hash::<Sha256>::hash(empty_str), default_hash::<Sha256>());
+        assert_eq!(Hash::<Sha256>::hash(empty_opt), default_hash::<Sha256>());
+    }
+
+    #[test]
+    fn hash_sequence_is_order_sensitive() {
+        let a = vec![1u8, 2, 3];
+        let b = vec![3u8, 2, 1];
+
+        let hash_a = Hash::<Sha256>::hash(a);
+        let hash_b = Hash::<Sha256>::hash(b);
+
+        assert_ne!(hash_a, hash_b);
+    }
+}
+
 /// Trait to compute a SHA-2 hash using the digest type `D`
 pub trait Hash<D: Digest>: Sized {
     /// Compute the SHA-2 hash of this value
@@ -94,7 +130,7 @@ impl<D: Digest> Hash<D> for usize {
     }
 }
 
-impl<'a, D: Digest> Hash<D> for &'a str {
+impl<D: Digest> Hash<D> for &str {
     fn hash(self) -> Output<D> {
         D::digest(self.as_bytes())
     }
@@ -106,7 +142,7 @@ impl<D: Digest> Hash<D> for String {
     }
 }
 
-impl<'a, D: Digest> Hash<D> for &'a String {
+impl<D: Digest> Hash<D> for &String {
     fn hash(self) -> Output<D> {
         Hash::<D>::hash(self.as_str())
     }
@@ -204,7 +240,7 @@ macro_rules! hash_array {
 }
 
 hash_array! {
-    01 02 03 04 05 06 07 08 09 10
+    1 2 3 4 5 6 7 8 9 10
     11 12 13 14 15 16 17 18 19 20
     21 22 23 24 25 26 27 28 29 30
     31 32
